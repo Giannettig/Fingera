@@ -5,6 +5,7 @@ library(data.table)
 library(xml2)
 library(purrr)
 library(doParallel)
+library(dplyr)
 
 #=======BASIC INFO ABOUT THE Fingera EXTRACTOR========#
 
