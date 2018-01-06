@@ -2,7 +2,6 @@
 #Install the libraries
 library(httr)
 library(data.table)
-library(dtplyr)
 library(xml2)
 library(purrr)
 library(doParallel)
