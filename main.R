@@ -6,8 +6,12 @@ library(xml2)
 library(purrr)
 library(doParallel)
 library(dplyr)
+library(jsonlite)
 
 #=======BASIC INFO ABOUT THE Fingera EXTRACTOR========#
+
+# Using fingera API documentation v.5.4.0.
+# Main Changes are defining offsets for users
 
 #=======CONFIGURATION========#
 ## initialize application
@@ -23,66 +27,82 @@ user<-app$getParameters()$user
 # end_date<-app$getParameters()$to
 api<-app$getParameters()$api_url
 
+
+# devel -------------------------------------------------------------------
+
+source("devel.R")
+
 ##Catch config errors
 
 if(is.null(user)) stop("enter your username in the user config field")
 if(is.null(password)) stop("enter your password in the #password config field")
+if(is.null(api)) stop("enter the API url")
 
+## List of possible endpoints
+endpoint_list<-c(
+  "day_schedules", 
+  "event_categories",
+  "fingera_stations",
+  "groups",
+  "local_settings",
+  "settings",
+  "terminals",
+  "time_logs",
+  "user_accounts",
+  "users")
 
-##Now process the request
+##Functions 
 
-getStats<-function(api,endpoint){
-  
-  url<-paste0(api,endpoint)
+getStats <- function( endpoint, api, ids = FALSE ) {
+  url <- paste0(api, endpoint)
   
   r <-
     RETRY(
       "GET",
       url,
-      config = authenticate(user,password),
+      config = authenticate(user, password),
       times = 3,
       pause_base = 3,
       pause_cap = 10
     )
   
-  res<-content(r,"text",encoding = "UTF-8")%>%fromJSON
+  if (as.numeric(r$headers$`x-total`) > as.numeric(r$headers$`x-max-limit`)) {
+    #get the size of the list
+    size <- as.numeric(r$headers$`x-total`)
+    limit <- as.numeric(r$headers$`x-max-limit`)
+    sequence <- if(ids == FALSE) seq(0, size, by = limit)
+    
+    #register cores on the machine for the parallel loop - tohle nefunguje, zatím používám klasickou smyčku.
+    if(length(sequence)>1000) registerDoParallel(cores=detectCores()-1)
+    
+    res <-
+      foreach(
+        i = sequence,
+        .combine = bind_rows,
+        .multicombine = TRUE,
+        .init = NULL,
+        .errorhandling = "remove"
+      ) %dopar% {
+        
+        r <-
+          GET(
+            url,
+            config = authenticate(user, password),
+            query = list("offset" = i, "limit" = limit)
+          )
+        res <- content(r, "text", encoding = "UTF-8") %>% fromJSON
+        
+      }
+    
+  } else{ res <- content(r, "text", encoding = "UTF-8") %>% fromJSON }
+  
+  result<-res%>%distinct
   
 }
 
-getTimelogs<-function(api,user_id){
-  
-  url<-paste0(api,"time_logs")
-  
-  args<-list(
-    "user_id"=user_id
-  )
-  
-r<-RETRY(
-      "GET",
-      url,
-      config = authenticate(user,password),
-      times = 3,
-      pause_base = 3,
-      pause_cap = 10,
-      query = args
-    )
 
-  res<-content(r,"text",encoding = "UTF-8")%>%fromJSON
-  
-}
+results<-map(endpoint_list,getStats,api=api)
 
-#iterate over users
-users<-getStats(api,"users")
+##Write the tables in the output bucket
 
-user_ids<-users%>%select(id)%>%.[,1]
-
-registerDoParallel(cores=detectCores()-1)
-
-res<-foreach(i=user_ids,.combine=bind_rows,.multicombine = TRUE, .errorhandling="remove") %dopar% {
-
-getTimelogs(api,i)
-
-}
-
-write_csv(res,"out/tables/time_logs.csv")
-write_csv(res,"out/tables/users.csv")
+map2(results,endpoint_list,function(x,y){fwrite(x,paste0("out/tables/",y,".csv"))})
